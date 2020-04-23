@@ -1,181 +1,165 @@
-from DiscordScraper import ConfigHandler, DatetimeHandler, NetworkHandler, NetworkHeader, CustomError
+from DiscordScraper import NetworkHandler, DatetimeHandler, ConfigHandler, ArgumentHandler
+from DiscordScraper.DatetimeHandler import futureCheck
 from os import makedirs, getcwd, path
-from inspect import findsource
-from sys import stderr
+
+# Set our general network header data.
+networkHeaders = { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.10 Chrome/78.0.3904.130 Electron/7.1.11 Safari/537.36' }
 
 
-def setToken(configHandler, token):
-    configHandler.load()
-    configHandler.set(token=token)
-    configHandler.write()
+def handleNetworkData(configHandler, dayMinSnowflake, dayMaxSnowflake):
+    """
+    The function that will handle all of the downloading of the JSON and binary data.
 
+    :param configHandler: The configuration handler class object.
+    :param dayMinSnowflake: The minimum snowflake value (yesterday's snowflake).
+    :param dayMaxSnowflake: The maximum snowflake value (today's snowflake).
+    :return:
+    """
 
-def setOption(configHandler, option, value):
-    configHandler.load()
+    # Iterate through our guilds for our guild IDs, names, and channels.
+    for guildId, guildData in configHandler.configData['guilds'].items():
 
-    options = configHandler.configData['options']
-    options.update({option: value})
+        # Iterate through our guild channels for our channel IDs and names.
+        for channelId, channelName in guildData['channels'].items():
 
-    configHandler.set(options=options)
-    configHandler.write()
+            # Create a relative file path based on the current directory.
+            relativePath = path.join(getcwd(), 'Scrapes', guildData['name'], channelName)
 
+            # If the relative filepath doesn't exist, then simply create it alongside the subfolders.
+            if not path.exists(relativePath):
+                makedirs(relativePath)
 
-def delChannel(configHandler, guildID, channelID):
-    configHandler.load()
+            # Update our general network header data to include our referer and authorization token.
+            networkHeaders.update({'referer': f'https://discordapp.com/channels/{guildId}/{channelId}', 'authorization': configHandler.configData['token']})
 
-    guilds = configHandler.configData['guilds']
-    del guilds[guildID]['channels'][channelID]
+            # Create our NetworkHandler class object.
+            networkHandler = NetworkHandler()
 
-    configHandler.set(guilds=guilds)
-    configHandler.write()
+            # Set our network headers.
+            networkHandler.setHeaders(networkHeaders)
 
+            # Set our target URL.
+            networkHandler.setSearchParams(guildId, channelId, dayMinSnowflake, dayMaxSnowflake, options=configHandler.configData['options'])
 
-def addChannel(configHandler, guildID, channelID, channelName):
-    configHandler.load()
+            # Download our JSON data.
+            jsonData = networkHandler.downloadJsonData()
 
-    guilds = configHandler.configData['guilds']
-    guilds[guildID]['channels'].update({channelID: channelName})
+            # Determine if we have any results, if not then we just skip the channel for the day.
+            if jsonData['total_results'] == 0:
+                continue
 
-    configHandler.set(guilds=guilds)
-    configHandler.write()
+            # Otherwise iterate through all of the messages in the JSON data.
+            for messages in jsonData['messages']:
 
+                # Gather each individual message.
+                for message in messages:
 
-def delGuild(configHandler, guildID):
-    configHandler.load()
+                    # Determine if we have any attachments to grab.
+                    if 'attachments' in message and len(message['attachments']) > 0:
 
-    guilds = configHandler.configData['guilds']
-    del guilds[guildID]
+                        # Gather each individual attachment.
+                        for attachment in message['attachments']:
 
-    configHandler.set(guilds=guilds)
-    configHandler.write()
+                            # Set the file URL.
+                            fileUrl = attachment['proxy_url']
 
+                            # Download the file.
+                            networkHandler.downloadBinaryData(fileUrl, relativePath)
 
-def addGuild(configHandler, guildID, guildName):
-    configHandler.load()
+                    # Determine if we have any embedded messages to grab.
+                    if 'embeds' in message and len(message['embeds']) > 0:
 
-    guilds = configHandler.configData['guilds']
-    guilds.update({guildID: {'name': guildName, 'channels': {}}})
+                        # Set a custom user agent string.
+                        fileHeader = { 'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.116 Safari/537.36'}
 
-    configHandler.set(guilds=guilds)
-    configHandler.write()
+                        # Gather each individual embedded message.
+                        for embed in message['embeds']:
 
+                            # Determine if there's any images in our embedded message.
+                            if 'image' in embed and len(embed['image']) > 0:
 
-def initialize(configHandler):
-    try:
-        configHandler.new(token='', channels={}, options={})
-        setToken(configHandler, input('Authorization Token: '))
+                                # Set the file URL.
+                                fileUrl = embed['image']['proxy_url']
 
-        numGuilds = input('How many guilds/servers are we scraping: ')
-        for guildNum in range(int(numGuilds)):
-            guildID = str(input(f'Enter the ID for Guild #{guildNum + 1}: '))
-            guildName = str(input(f'Enter the name for Guild #{guildNum + 1}: '))
-            addGuild(configHandler, guildID, guildName)
+                                # Download the file.
+                                networkHandler.downloadBinaryData(fileUrl, relativePath, fileHeader)
 
-            numChannels = input(f'How many channels are we scraping in {guildName}: ')
-            for channelNum in range(int(numChannels)):
-                channelID = str(input(f'Enter the ID for Channel #{channelNum + 1}: '))
-                channelName = str(input(f'Enter the name for Channel #{channelNum + 1}: '))
-                addChannel(configHandler, guildID, channelID, channelName)
+                            # Determine if there's any videos in our embedded message.
+                            if 'video' in embed and len(embed['video']) > 0:
 
-        setOption(configHandler, 'nsfw',   int(input('Are we scraping NSFW data [0|1]: ')))
-        setOption(configHandler, 'embeds', int(input('Are we scraping embedded data [0|1]: ')))
-        setOption(configHandler, 'images', int(input('Are we scraping image data [0|1]: ')))
-        setOption(configHandler, 'sounds', int(input('Are we scraping sound data [0|1]: ')))
-        setOption(configHandler, 'links',  int(input('Are we scraping hyperlinks [0|1]: ')))
-        setOption(configHandler, 'files',  int(input('Are we scraping user files [0|1]: ')))
-        setOption(configHandler, 'texts',  int(input('Are we scraping user posts [0|1]: ')))
+                                # Determine if there's a proxy_url option in the embed video.
+                                if 'proxy_url' in embed['video']:
 
-    except ( ValueError, TypeError ) as e:
-        raise CustomError(e, 'Discord', findsource(initialize)[1], 'initialize', [configHandler])
+                                    # Set the file URL.
+                                    fileUrl = embed['video']['proxy_url']
 
-    except CustomError as ce:
-        stderr.write(ce.getMessage())
-
-
-def downloadFile(url, networkHeader, filepath, filename):
-    try:
-        file = path.join(filepath, filename)
-        if path.isfile(file):
-            return None
-
-        networkHandler = NetworkHandler()
-        networkHandler.set(url=url)
-
-        with open(file, 'wb') as fstream:
-            fstream.write(networkHandler.download(networkHandler, networkHeader, True).raw.read())
-
-    except ( ValueError, TypeError ) as e:
-        raise CustomError(e, 'Discord', findsource(downloadFile)[1], 'downloadFile', [url, networkHeader, filepath, filename])
-
-    except CustomError as ce:
-        stderr.write(ce.getMessage())
+                                    # Download the file.
+                                    networkHandler.downloadBinaryData(fileUrl, relativePath, fileHeader)
 
 
 def start(configHandler):
-    configHandler.load()
+    """
+    Boot our scraper script and let it start scraping data.
 
-    networkHeaders = {
-        'authorization': configHandler.configData['token'],
-        'referer': 'https://discordapp.com/channels/{}/{}',
-        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.10 Chrome/78.0.3904.130 Electron/7.1.11 Safari/537.36'
-    }
+    :param configHandler: The configuration handler class object.
+    :return:
+    """
 
-    yearRange = DatetimeHandler.getRange(2015, DatetimeHandler.getToday().year, DatetimeHandler.getToday().month)
+    # Create a blank array to store our snowflake ranges.
     timeRangeSnowflakes = []
 
-    for year, months in yearRange.items():
-        for month in range(len(months), 1, -1):
-            for day in range(months[month - 1], 1, -1):
-                if (DatetimeHandler.getToday().year == year) and (DatetimeHandler.getToday().month == month) and (DatetimeHandler.getToday().day + 1 < day):
+    # Load our configuration from our configuration JSON file.
+    configHandler.load()
+
+    # Get the entire calendar range for Discord's existence.
+    yearRange = DatetimeHandler.getRange(2015, DatetimeHandler.getToday().year, DatetimeHandler.getToday().month)
+
+    # Iterate through the years and the calendar dates in our year range.
+    for year, dates in yearRange.items():
+
+        # Iterate through the months in our calendar dates.
+        for month in range(len(dates), 1, -1):
+
+            # Iterate through the days in our months.
+            for day in range(dates[month - 1], 1, -1):
+
+                # Determine if the current date is in the future. Skip it altogether if it is.
+                if futureCheck(year, month, day):
                     continue
 
+                # Get the current date timestamp.
                 dayTimestamp = DatetimeHandler.fromDay(year, month, day)
+
+                # Convert the timestamp over to a snowflake.
                 daySnowflake = DatetimeHandler.fromTimestamp(dayTimestamp)
+
+                # Append the snowflake to our snowflake ranges.
                 timeRangeSnowflakes.append(daySnowflake)
 
+    # Cap off the end of our snowflake ranges with the last snowflake in the range.
     timeRangeSnowflakes.append(timeRangeSnowflakes[-1])
+
+    # Iterate through our snowflake range values.
     for index in range(len(timeRangeSnowflakes) - 1):
+
+        # Set the current snowflake value as the maximum.
         dayMaxSnowflake = timeRangeSnowflakes[index]
+
+        # Set yesterday's snowflake value as the minimum.
         dayMinSnowflake = timeRangeSnowflakes[index + 1]
 
-        for guildID, guildData in configHandler.configData['guilds'].items():
-            for channelID, channelName in guildData['channels'].items():
-                relativePath = path.join(getcwd(), 'Scrapes', guildData['name'], channelName)
-                if not path.exists(relativePath):
-                    makedirs(relativePath)
-
-                networkHeaders.update({'referer': networkHeaders['referer'].format(guildID, channelID)})
-                has = '&has=image&has=video&has=embed&has=file&has=link&has=sound'
-
-                networkHeader = NetworkHeader()
-                networkHeader.new(networkHeaders)
-
-                networkHandler = NetworkHandler()
-                networkHandler.set(url=f'https://discordapp.com/api/v6/guilds/{guildID}/messages/search?channel_id={channelID}{has}&min_id={dayMinSnowflake}&max_id={dayMaxSnowflake}&include_nsfw=true')
-
-                networkData = NetworkHandler.download(networkHandler, networkHeader).json()
-                if networkData['total_results'] == 0:
-                    continue
-
-                for messages in networkData['messages']:
-                    for message in messages:
-                        if 'attachments' in message and len(message['attachments']) > 0:
-                            for attachment in message['attachments']:
-                                url = attachment['proxy_url']
-                                downloadFile(url, networkHeader, relativePath, '_'.join(url.split('/')[-2::]).split('?')[0])
-
-                        if 'embeds' in message and len(message['embeds']) > 0:
-                            for embed in message['embeds']:
-                                if 'image' in embed and len(embed['image']) > 0:
-                                    url = embed['image']['proxy_url']
-                                    downloadFile(url, networkHeader, relativePath, '_'.join(url.split('/')[-2::]).split('?')[0])
+        # Pass our snowflake ranges to our network handler function.
+        handleNetworkData(configHandler, dayMinSnowflake, dayMaxSnowflake)
 
 
 if __name__ == '__main__':
 
+    # Load a file named discord.json which will store our configuration data.
     configHandler = ConfigHandler('discord')
-    if not path.isfile(configHandler.filename):
-        initialize(configHandler)
 
-    else:
-        start(configHandler)
+    # Determine if our configuration data file exists.
+    if not path.isfile(configHandler.filename):  # Create a new one if one doesn't already exist.
+        ArgumentHandler(configHandler).initialize()
+
+    # Start the scraping process otherwise.
+    start(configHandler)
