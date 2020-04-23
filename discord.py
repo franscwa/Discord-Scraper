@@ -1,348 +1,181 @@
-#
-# Imported module functions
-#
-
-# Use our SimpleRequests module for this experimental version.
-from SimpleRequests import SimpleRequest
-from SimpleRequests.SimpleRequest import error
-
-# Use the datetime module for generating timestamps and snowflakes.
-from datetime import datetime, timedelta
-
-# Use the os module for creating directories and writing files.
+from DiscordScraper import ConfigHandler, DatetimeHandler, NetworkHandler, NetworkHeader, CustomError
 from os import makedirs, getcwd, path
-
-# Use the mimetypes module to determine the mimetype of a file.
-from mimetypes import MimeTypes
-
-# Use the sqlite3 module to access SQLite databases.
-from sqlite3 import connect
-
-# Use the random module to choose from a list at random.
-from random import choice
-
-# Convert JSON to a Python dictionary for ease of traversal.
-from json import loads
-
-#
-# Lambda functions
-#
-
-# Return a random string of a specified length.
-random_str = lambda length: ''.join([choice('0123456789ABCDEF') for i in range(length)])
-
-# Get the mimetype string from an input filename.
-mimetype = lambda name: MimeTypes().guess_type(name)[0] \
-    if MimeTypes().guess_type(name)[0] is not None \
-    else 'application/octet-stream'
-
-# Return a Discord snowflake from a timestamp.
-snowflake = lambda timestamp_s: (timestamp_s * 1000 - 1420070400000) << 22
-
-# Return a timestamp from a Discord snowflake.
-timestamp = lambda snowflake_t: ((snowflake_t >> 22) + 1420070400000) / 1000.0
+from inspect import findsource
+from sys import stderr
 
 
-#
-# Global functions
-#
+def setToken(configHandler, token):
+    configHandler.load()
+    configHandler.set(token=token)
+    configHandler.write()
 
 
-def get_day(day, month, year):
-    """Get the timestamps from 00:00 to 23:59 of the given day.
+def setOption(configHandler, option, value):
+    configHandler.load()
 
-    :param day: The target day.
-    :param month: The target month.
-    :param year: The target year.
-    """
+    options = configHandler.configData['options']
+    options.update({option: value})
 
-    min_time = datetime(year, month, day, 
-        hour=0, minute=0, second=0).timestamp()
+    configHandler.set(options=options)
+    configHandler.write()
 
-    max_time = datetime(year, month, day, 
-        hour=23, minute=59, second=59).timestamp()
 
-    return {
-        '00:00': snowflake(int(min_time)),
-        '23:59': snowflake(int(max_time))
+def delChannel(configHandler, guildID, channelID):
+    configHandler.load()
+
+    guilds = configHandler.configData['guilds']
+    del guilds[guildID]['channels'][channelID]
+
+    configHandler.set(guilds=guilds)
+    configHandler.write()
+
+
+def addChannel(configHandler, guildID, channelID, channelName):
+    configHandler.load()
+
+    guilds = configHandler.configData['guilds']
+    guilds[guildID]['channels'].update({channelID: channelName})
+
+    configHandler.set(guilds=guilds)
+    configHandler.write()
+
+
+def delGuild(configHandler, guildID):
+    configHandler.load()
+
+    guilds = configHandler.configData['guilds']
+    del guilds[guildID]
+
+    configHandler.set(guilds=guilds)
+    configHandler.write()
+
+
+def addGuild(configHandler, guildID, guildName):
+    configHandler.load()
+
+    guilds = configHandler.configData['guilds']
+    guilds.update({guildID: {'name': guildName, 'channels': {}}})
+
+    configHandler.set(guilds=guilds)
+    configHandler.write()
+
+
+def initialize(configHandler):
+    try:
+        configHandler.new(token='', channels={}, options={})
+        setToken(configHandler, input('Authorization Token: '))
+
+        numGuilds = input('How many guilds/servers are we scraping: ')
+        for guildNum in range(int(numGuilds)):
+            guildID = str(input(f'Enter the ID for Guild #{guildNum + 1}: '))
+            guildName = str(input(f'Enter the name for Guild #{guildNum + 1}: '))
+            addGuild(configHandler, guildID, guildName)
+
+            numChannels = input(f'How many channels are we scraping in {guildName}: ')
+            for channelNum in range(int(numChannels)):
+                channelID = str(input(f'Enter the ID for Channel #{channelNum + 1}: '))
+                channelName = str(input(f'Enter the name for Channel #{channelNum + 1}: '))
+                addChannel(configHandler, guildID, channelID, channelName)
+
+        setOption(configHandler, 'nsfw',   int(input('Are we scraping NSFW data [0|1]: ')))
+        setOption(configHandler, 'embeds', int(input('Are we scraping embedded data [0|1]: ')))
+        setOption(configHandler, 'images', int(input('Are we scraping image data [0|1]: ')))
+        setOption(configHandler, 'sounds', int(input('Are we scraping sound data [0|1]: ')))
+        setOption(configHandler, 'links',  int(input('Are we scraping hyperlinks [0|1]: ')))
+        setOption(configHandler, 'files',  int(input('Are we scraping user files [0|1]: ')))
+        setOption(configHandler, 'texts',  int(input('Are we scraping user posts [0|1]: ')))
+
+    except ( ValueError, TypeError ) as e:
+        raise CustomError(e, 'Discord', findsource(initialize)[1], 'initialize', [configHandler])
+
+    except CustomError as ce:
+        stderr.write(ce.getMessage())
+
+
+def downloadFile(url, networkHeader, filepath, filename):
+    try:
+        file = path.join(filepath, filename)
+        if path.isfile(file):
+            return None
+
+        networkHandler = NetworkHandler()
+        networkHandler.set(url=url)
+
+        with open(file, 'wb') as fstream:
+            fstream.write(networkHandler.download(networkHandler, networkHeader, True).raw.read())
+
+    except ( ValueError, TypeError ) as e:
+        raise CustomError(e, 'Discord', findsource(downloadFile)[1], 'downloadFile', [url, networkHeader, filepath, filename])
+
+    except CustomError as ce:
+        stderr.write(ce.getMessage())
+
+
+def start(configHandler):
+    configHandler.load()
+
+    networkHeaders = {
+        'authorization': configHandler.configData['token'],
+        'referer': 'https://discordapp.com/channels/{}/{}',
+        'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) discord/0.0.10 Chrome/78.0.3904.130 Electron/7.1.11 Safari/537.36'
     }
 
-
-def safe_name(name):
-    """Convert name to a *nix/Windows compliant name.
-
-    :param name: The filename to convert.
-    """
-
-    output = ""
-    for char in name:
-        if char not in '\\/<>:"|?*':
-            output += char
-
-    return output
-
-
-def create_query_body(**kwargs):
-    """Generate a search query string for Discord."""
-
-    query = ""
-
-    for key, value in kwargs.items():
-        if value is True and key != 'nsfw':
-            query += '&has=%s' % key[:-1]
-
-        if key == 'nsfw':
-            query += '&include_nsfw=%s' % str(value).lower()
-
-    return query
-
-
-#
-# Classes
-#
-
-
-class DiscordConfig(object):
-    """Just a class used to store configs as objects."""
-
-
-class Discord:
-    """Experimental Discord scraper class."""
-
-    def __init__(self, config='config.json', apiver='v6'):
-        """Discord constructor.
-
-        :param config: The configuration JSON file.
-        :param apiver: The current Discord API version.
-        """
-
-        with open(config, 'r') as configfile:
-            configdata = loads(configfile.read())
-
-        cfg = type('DiscordConfig', (object,), configdata)()
-        if cfg.token == "" or cfg.token is None:
-            error('You must have an authorization token set in %s' % config)
-            exit(-1)
-
-        self.api = apiver
-        self.buffer = cfg.buffer
-
-        self.headers = {
-            'user-agent': cfg.agent,
-            'authorization': cfg.token
-        }
-
-        self.types = cfg.types
-        self.query = create_query_body(
-            images=cfg.query['images'],
-            files=cfg.query['files'],
-            embeds=cfg.query['embeds'],
-            links=cfg.query['links'],
-            videos=cfg.query['videos'],
-            nsfw=cfg.query['nsfw']
-        )
-
-        self.directs = cfg.directs if len(cfg.directs) > 0 else {}
-        self.servers = cfg.servers if len(cfg.servers) > 0 else {}
-
-        # Save us the time by exiting out when there's nothing to scrape.
-        if len(cfg.directs) == 0 and len(cfg.servers) == 0:
-            error('No servers or DMs were set to be grabbed, exiting.')
-            exit(0)
-
-    def get_server_name(self, serverid, isdm=False):
-        """Get the server name by its ID.
-
-        :param serverid: The server ID.
-        :param isdm: A flag to check whether we're in a DM or not.
-        """
-
-        if isdm:
-            return serverid
-
-        request = SimpleRequest(self.headers).request
-        server = request.grab_page('https://discordapp.com/api/%s/guilds/%s' % (self.api, serverid))
-
-        if server is not None and len(server) > 0:
-            return '%s_%s' % (serverid, safe_name(server['name']))
-
-        else:
-            error('Unable to fetch server name from id, generating one instead.')
-            return '%s_%s' % (serverid, random_str(12))
-
-    def get_channel_name(self, channelid, isdm=False):
-        """Get the channel name by its ID.
-
-        :param channelid: The channel ID.
-        :param isdm: A flag to check whether we're in a DM or not.
-        """
-
-        if isdm:
-            return channelid
-
-        request = SimpleRequest(self.headers).request
-        channel = request.grab_page('https://discordapp.com/api/%s/channels/%s' % (self.api, channelid))
-
-        if channel is not None and len(channel) > 0:
-            return '%s_%s' % (channelid, safe_name(channel['name']))
-
-        else:
-            error('Unable to fetch channel name from id, generating one instead.')
-            return '%s_%s' % (channelid, random_str(12))
-
-    @staticmethod
-    def create_folders(server, channel):
-        """Create the folder structure.
-
-        :param server: The server name.
-        :param channel: The channel name.
-        """
-
-        folder = path.join(getcwd(), 'Discord Scrapes', server, channel)
-        if not path.exists(folder):
-            makedirs(folder)
-
-        return folder
-
-    def download(self, url, folder):
-        """Download the contents of a URL.
-
-        :param url: The target URL.
-        :param folder: The target folder.
-        """
-
-        request = SimpleRequest(self.headers).request
-        request.set_header('user-agent', 'Mozilla/5.0 (X11; Linux x86_64) Chrome/78.0.3904.87 Safari/537.36')
-
-        filename = safe_name('%s_%s' % (url.split('/')[-2], url.split('/')[-1]))
-        if not path.exists(filename):
-            request.stream_file(url, folder, filename, self.buffer)
-
-    def check_config_mimetypes(self, source, folder):
-        """Check the config settings against the source mimetype.
-
-        :param source: Response from Discord search.
-        :param folder: Folder where the data will be stored.
-        """
-
-        for attachment in source['attachments']:
-            if self.types['images'] is True:
-                if mimetype(attachment['proxy_url']).split('/')[0] == 'image':
-                    self.download(attachment['proxy_url'], folder)
-
-            if self.types['videos'] is True:
-                if mimetype(attachment['proxy_url']).split('/')[0] == 'video':
-                    self.download(attachment['proxy_url'], folder)
-
-            if self.types['files'] is True:
-                if mimetype(attachment['proxy_url']).split('/')[0] not in ['image', 'video']:
-                    self.download(attachment['proxy_url'], folder)
-
-    @staticmethod
-    def insert_text(server, channel, message):
-        """Insert the text data into our SQLite database file.
-
-        :param server: The server name.
-        :param channel: The channel name.
-        :param message: Our message object.
-        """
-
-        dbdir = path.join(getcwd(), 'Discord Scrapes')
-        if not path.exists(dbdir):
-            makedirs(dbdir)
-
-        dbfile = path.join(dbdir, 'text.db')
-        db = connect(dbfile)
-        c = db.cursor()
-
-        c.execute('''CREATE TABLE IF NOT EXISTS text_%s_%s (
-            id TEXT,
-            name TEXT,
-            content TEXT,
-            timestamp TEXT
-        )''' % (server, channel))
-
-        c.execute('INSERT INTO text_%s_%s VALUES (?,?,?,?)' % (server, channel), (
-            message['author']['id'],
-            '%s#%s' % (message['author']['username'], message['author']['discriminator']),
-            message['content'],
-            message['timestamp']
-        ))
-
-        db.commit()
-        db.close()
-
-    def grab_data(self, folder, server, channel, isdm=False):
-        """Scan and grab the attachments.
-
-        :param folder: The folder name.
-        :param server: The server name.
-        :param channel: The channel name.
-        :param isdm: A flag to check whether we're in a DM or not.
-        """
-
-        date = datetime.today()
-
-        while date.year >= 2015:
-            request = SimpleRequest(self.headers).request
-            today = get_day(date.day, date.month, date.year)
-
-            if not isdm:
-                request.set_header('referer', 'https://discordapp.com/channels/%s/%s' % (server, channel))
-                content = request.grab_page(
-                    'https://discordapp.com/api/%s/guilds/%s/messages/search?channel_id=%s&min_id=%s&max_id=%s&%s' %
-                    (self.api, server, channel, today['00:00'], today['23:59'], self.query)
-                )
-            else:
-                request.set_header('referer', 'https://discordapp.com/channels/@me/%s' % channel)
-                content = request.grab_page(
-                    'https://discordapp.com/api/%s/channels/%s/messages/search?min_id=%s&max_id=%s&%s' %
-                    (self.api, channel, today['00:00'], today['23:59'], self.query)
-                )
-
-            try:
-                if content['messages'] is not None:
-                    for messages in content['messages']:
-                        for message in messages:
-                            self.check_config_mimetypes(message, folder)
-
-                            if self.types['text'] is True:
-                                if len(message['content']) > 0:
-                                    self.insert_text(server, channel, message)
-            except TypeError:
-                continue
-            
-            date += timedelta(days=-1)
-
-    def grab_server_data(self):
-        """Scan and grab the attachments within a server."""
-
-        for server, channels in self.servers.items():
-            for channel in channels:
-                folder = self.create_folders(
-                    self.get_server_name(server),
-                    self.get_channel_name(channel)
-                )
-
-                self.grab_data(folder, server, channel)
-
-    def grab_dm_data(self):
-        """Scan and grab the attachments within a direct message."""
-
-        for alias, channel in self.directs.items():
-            folder = self.create_folders(
-                path.join('Direct Messages', alias),
-                channel
-            )
-
-            self.grab_data(folder, alias, channel, True)
-
-#
-# Initializer
-#
+    yearRange = DatetimeHandler.getRange(2015, DatetimeHandler.getToday().year, DatetimeHandler.getToday().month)
+    timeRangeSnowflakes = []
+
+    for year, months in yearRange.items():
+        for month in range(len(months), 1, -1):
+            for day in range(months[month - 1], 1, -1):
+                if (DatetimeHandler.getToday().year == year) and (DatetimeHandler.getToday().month == month) and (DatetimeHandler.getToday().day + 1 < day):
+                    continue
+
+                dayTimestamp = DatetimeHandler.fromDay(year, month, day)
+                daySnowflake = DatetimeHandler.fromTimestamp(dayTimestamp)
+                timeRangeSnowflakes.append(daySnowflake)
+
+    timeRangeSnowflakes.append(timeRangeSnowflakes[-1])
+    for index in range(len(timeRangeSnowflakes) - 1):
+        dayMaxSnowflake = timeRangeSnowflakes[index]
+        dayMinSnowflake = timeRangeSnowflakes[index + 1]
+
+        for guildID, guildData in configHandler.configData['guilds'].items():
+            for channelID, channelName in guildData['channels'].items():
+                relativePath = path.join(getcwd(), 'Scrapes', guildData['name'], channelName)
+                if not path.exists(relativePath):
+                    makedirs(relativePath)
+
+                networkHeaders.update({'referer': networkHeaders['referer'].format(guildID, channelID)})
+                has = '&has=image&has=video&has=embed&has=file&has=link&has=sound'
+
+                networkHeader = NetworkHeader()
+                networkHeader.new(networkHeaders)
+
+                networkHandler = NetworkHandler()
+                networkHandler.set(url=f'https://discordapp.com/api/v6/guilds/{guildID}/messages/search?channel_id={channelID}{has}&min_id={dayMinSnowflake}&max_id={dayMaxSnowflake}&include_nsfw=true')
+
+                networkData = NetworkHandler.download(networkHandler, networkHeader).json()
+                if networkData['total_results'] == 0:
+                    continue
+
+                for messages in networkData['messages']:
+                    for message in messages:
+                        if 'attachments' in message and len(message['attachments']) > 0:
+                            for attachment in message['attachments']:
+                                url = attachment['proxy_url']
+                                downloadFile(url, networkHeader, relativePath, '_'.join(url.split('/')[-2::]).split('?')[0])
+
+                        if 'embeds' in message and len(message['embeds']) > 0:
+                            for embed in message['embeds']:
+                                if 'image' in embed and len(embed['image']) > 0:
+                                    url = embed['image']['proxy_url']
+                                    downloadFile(url, networkHeader, relativePath, '_'.join(url.split('/')[-2::]).split('?')[0])
 
 
 if __name__ == '__main__':
-    ds = Discord()
-    ds.grab_server_data()
-    ds.grab_dm_data()
+
+    configHandler = ConfigHandler('discord')
+    if not path.isfile(configHandler.filename):
+        initialize(configHandler)
+
+    else:
+        start(configHandler)
